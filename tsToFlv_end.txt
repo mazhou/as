@@ -1,3 +1,4 @@
+fmpg:
 static void put_avc_eos_tag(AVIOContext *pb, unsigned ts)
 {
     avio_w8(pb, FLV_TAG_TYPE_VIDEO);
@@ -10,3 +11,40 @@ static void put_avc_eos_tag(AVIOContext *pb, unsigned ts)
     avio_wb24(pb, 0);               /* Always 0 for AVC EOS. */
     avio_wb32(pb, 16);              /* Size of FLV tag */
 }
+
+
+as
+var byteArray:ByteArray = new ByteArray(_timestamp); 
+     //tag 
+     byteArray.writeByte(0x09); 
+
+     //date 
+     byteArray.writeByte(0x00); 
+     byteArray.writeByte(0x00); 
+     byteArray.writeByte(0x05); 
+
+     //time 
+     byteArray.writeByte((time >> 16) & 0xff); 
+     byteArray.writeByte((time >> 8) & 0xff); 
+     byteArray.writeByte((time ) & 0xff); 
+     byteArray.writeByte((time >> 24) & 0xff); 
+
+     //streamId 
+     byteArray.writeByte(0x00);                
+     byteArray.writeByte(0x00); 
+     byteArray.writeByte(0x00); 
+
+     //avc_eos 
+     byteArray.writeByte(0x17); // ub[4] FrameType = 1, ub[4] CodecId = 7 
+     byteArray.writeByte(0x02); // AVC end of sequence 
+     byteArray.writeByte(0x00); // Always 0 for AVC EOS 3byte=24bit 
+     byteArray.writeByte(0x00); 
+     byteArray.writeByte(0x00); 
+
+     //presize 
+     byteArray.writeByte(0x00); 
+     byteArray.writeByte(0x00); 
+     byteArray.writeByte(0x00); 
+     byteArray.writeByte(0x10); 
+}
+
