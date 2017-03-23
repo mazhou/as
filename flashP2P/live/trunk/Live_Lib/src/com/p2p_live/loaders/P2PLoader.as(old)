@@ -1,0 +1,673 @@
+﻿package com.p2p_live.loaders
+{
+
+	import com.p2p_live.data.Chunk;
+	import com.p2p_live.data.Chunks;
+	import com.p2p_live.events.DataManagerEvent;
+	import com.p2p_live.events.P2PEvent;
+	import com.p2p_live.events.SelectorEvent;
+	import com.p2p_live.loaders.P2PPipe;
+	import com.p2p_live.loaders.gather_proto.*;
+	import com.p2p_live.managers.DataManager;
+	import com.p2p_live.utils.CRC32;
+	
+	import flash.errors.IOError;
+	import flash.events.Event;
+	import flash.events.EventDispatcher;
+	import flash.events.IOErrorEvent;
+	import flash.events.NetStatusEvent;
+	import flash.events.ProgressEvent;
+	import flash.events.SecurityErrorEvent;
+	import flash.events.TimerEvent;
+	import flash.net.*;
+	import flash.sampler.Sample;
+	import flash.system.Security;
+	import flash.utils.ByteArray;
+	import flash.utils.Timer;
+	import flash.utils.getTimer;
+
+	//import flash.net.NetConnection;
+	//import flash.net.NetStream;
+
+	public class P2PLoader extends EventDispatcher
+	{
+		private var _p2pConnection:NetConnection; //连接rtmfp服务器的
+		private var _dataManager:DataManager;
+		private var _groupName:String;		
+		
+		///////////////////////////////////////////////
+		private var _rtmfpName:String;
+		private var _rtmfpPort:uint;
+		private var _gatherName:String;
+		private var _gatherPort:uint;
+		
+		////////////////////////////
+		private var _selectorName:String;
+		private var _selectorPort:uint;
+		////////////////////////////////////////
+		// 从pipemanager移植的属性
+		private var _pipeList:Object;//管道列表
+		private var _p2pWaitTaskList:Object;//p2p任务列表,存储需要local向remote发送的数据请求时,远程数据列表没有数据时等待远程响应的任务
+		
+		private var _peerHartBeatTimer:Timer;
+		private var _gatherRegisterTimer:Timer;
+		private var _gatherQueryTimer:Timer;
+		private var _rtmfpTimer:Timer;
+		private var _selectorTimer:Timer;
+		
+		private var _PeerQuery:GatherClient;
+		private var _Register:GatherClient;
+		private var _MaxConnectedPeers:int = 7;
+		
+		/**
+		 * _badPipeList保存连接失败的peerID，用来进行对比
+		 其中包含liveTime属性用来保存_badPipeList的创建时间
+		 用来比较_badPipeList的存在时间
+		 */		
+		private var _badPipeList:Object;
+		
+		
+		public function P2PLoader(dataManager:DataManager)
+		{  
+			_dataManager    = dataManager;
+			//_selectorName = "123.126.32.18";//"115.182.94.26";//
+			//_selectorName  = "115.182.94.26";
+			_selectorPort  = 1755;
+			_selectorName  = "selector.webp2p.letv.com";
+			//_selectorPort  = 80;
+			trace("xxxxxxxxxxxxxxxxxx")
+		}
+		
+		private var _selector:SelectorLoader;
+		//
+		public function startLoadP2P(groupName:String = "www.letv.com/p2pTest21"):void
+		{
+			clear();
+			
+			_groupName = groupName;	
+			_pipeList        = new Object();
+			_p2pWaitTaskList = new Object();
+			_badPipeList     = new Object();
+			
+			//selectorInit();
+			_selectorTimer = new Timer(0);
+			_selectorTimer.addEventListener(TimerEvent.TIMER, selectorInit );
+			_selectorTimer.start();			
+			//
+			_peerHartBeatTimer = new Timer(3*1000);
+			_peerHartBeatTimer.addEventListener(TimerEvent.TIMER, peerHartBeatTimer );
+			_peerHartBeatTimer.start();
+			
+			_rtmfpTimer = new Timer(100,1);
+			_rtmfpTimer.addEventListener(TimerEvent.TIMER, rtmfpTimer );
+			//_rtmfpTimer.start();
+						
+			_gatherRegisterTimer  = new Timer(300); // 注册周期 5秒
+			_gatherRegisterTimer.addEventListener(TimerEvent.TIMER, gatherRegisterTimer );
+			//_gatherRegisterTimer.start();
+			
+			_gatherQueryTimer  = new Timer(300); // 注册周期 5秒
+			_gatherQueryTimer.addEventListener(TimerEvent.TIMER, gatherQueryTimer );
+			//_gatherQueryTimer.start();
+			//
+			//
+			if(_Register)
+			{
+				_Register.addEventListener(DataManagerEvent.STATUS,dispatchEvent);
+				_Register.addEventListener(DataManagerEvent.ERROR,dispatchEvent);
+			}
+			if(_PeerQuery)
+			{
+				_PeerQuery.addEventListener(DataManagerEvent.STATUS,dispatchEvent);
+				_PeerQuery.addEventListener(DataManagerEvent.ERROR,dispatchEvent);
+			}			
+			
+		}
+		private function _gatherService():void
+		{
+			_gatherServiceClear();
+			//
+			_PeerQuery = new GatherClient();
+			_Register  = new GatherClient();
+			//
+			if(_Register)
+			{
+				_Register.addEventListener(DataManagerEvent.STATUS,dispatchEvent);
+				_Register.addEventListener(DataManagerEvent.ERROR,dispatchEvent);
+			}
+			//
+			if(_PeerQuery)
+			{
+				_PeerQuery.addEventListener(DataManagerEvent.STATUS,dispatchEvent);
+				_PeerQuery.addEventListener(DataManagerEvent.ERROR,dispatchEvent);
+			}		
+		}
+		private function _gatherServiceClear():void
+		{
+			if(_Register)
+			{
+				_Register.removeEventListener(DataManagerEvent.STATUS,dispatchEvent);
+				_Register.removeEventListener(DataManagerEvent.ERROR,dispatchEvent);
+				_Register = null;
+			}
+			if(_PeerQuery)
+			{				
+				_PeerQuery.removeEventListener(DataManagerEvent.STATUS,dispatchEvent);
+				_PeerQuery.removeEventListener(DataManagerEvent.ERROR,dispatchEvent);
+				_PeerQuery = null;
+			}
+		}
+		public function clear():void
+		{
+			if (_selectorTimer)
+			{
+				_selectorTimer.removeEventListener(TimerEvent.TIMER, selectorInit);
+				_selectorTimer.stop();							    
+				_selectorTimer = null
+			}
+			if (_peerHartBeatTimer)
+			{
+				_peerHartBeatTimer.removeEventListener(TimerEvent.TIMER, peerHartBeatTimer);
+				_peerHartBeatTimer.stop();							    
+				_peerHartBeatTimer = null
+			}
+			if (_rtmfpTimer)
+			{
+				_rtmfpTimer.removeEventListener(TimerEvent.TIMER, rtmfpTimer);
+				_rtmfpTimer.stop();							    
+				_rtmfpTimer = null
+			}
+			if (_gatherRegisterTimer)
+			{
+				_gatherRegisterTimer.removeEventListener(TimerEvent.TIMER, gatherRegisterTimer);
+				_gatherRegisterTimer.stop();							    
+				_gatherRegisterTimer = null
+			}
+			if (_gatherQueryTimer)
+			{
+				_gatherQueryTimer.removeEventListener(TimerEvent.TIMER, gatherQueryTimer);
+				_gatherQueryTimer.stop();							    
+				_gatherQueryTimer = null
+			}
+			//
+			if (_p2pConnection)
+			{
+				_p2pConnection.removeEventListener(NetStatusEvent.NET_STATUS,p2pStatusHandler);
+				_p2pConnection.removeEventListener(IOErrorEvent.IO_ERROR,onError);
+				_p2pConnection.close();
+				_p2pConnection = null;
+			}			
+			//
+			_gatherServiceClear();
+			//
+			for each(var pipe:* in _pipeList)
+			{
+				pipe.clear();
+			}
+			//
+			delete _dataManager.userName["myName"];
+		}	
+		public function isLeader():Boolean
+		{
+			for(var index:String in _pipeList)
+			{
+				if(_pipeList[index].remotePlayHead > _dataManager.httpDownloadingTask)
+				{
+					return false;
+				}
+			}
+			//trace("leader=",index)
+			return true;
+		}
+		private function selectorInit(event:* = null):void
+		{			
+			_selectorTimer.delay = 100;
+			if (_selector)
+			{
+				if (_selector.isConnecting == true)
+				{
+					return;
+				}
+				if(_selector.error)
+				{
+					_selectorTimer.delay = 8*1000;
+					_selector = null;
+					//trace("_selector_selector_selector = "+_selector);
+					return;
+				}
+				//
+				if (_selector.isOK)
+				{
+					_gatherName = _selector.gatherIp;//"123.126.32.18"//
+					_gatherPort = _selector.gatherPort;//110;//
+					
+					_rtmfpPort = _selector.rtmfpPort;
+					_rtmfpName = _selector.rtmfpIp;
+					//"rtmfp://"+_selector.rtmfpIp+":" + _rtmfpPort +"/";//
+					//_rtmfpName = "rtmfp://"+"123.126.32.18:8122"+"/";//"rtmfp://123.126.32.18/";//"rtmfp://10.10.80.131/";//"rtmfp://"+"115.182.94.46"+"/";//"rtmfp://123.126.32.18/";//
+					
+					var obj:Object = new Object();
+					obj.code  = "P2P.selectorConnect.Success";
+					obj.act   = "selector";
+					obj.error = 0;
+					dispatchEvent(new DataManagerEvent(DataManagerEvent.STATUS,obj));					
+					
+					//
+					_rtmfpTimer.reset();
+					_rtmfpTimer.start();
+					//_gatherRegisterTimer.start();
+					//_gatherQueryTimer.start();
+					//
+					_selectorTimer.stop();
+					return;
+				}else if (_selector.redirectSelector)
+				{
+					_selectorName = _selector.selectorIP;
+					_selectorPort = _selector.selectorPort;
+					//
+					//trace("$$$$$$$$$$$$$");
+					_selector = new SelectorLoader();
+					_selector.init(_groupName, _selectorName, _selectorPort);
+					return;
+				}
+			}
+			//
+			//trace("%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%");
+			_selector = new SelectorLoader();
+			_selector.init(_groupName, _selectorName, _selectorPort);
+			//			
+		}
+		//
+		private function gatherRegisterTimer(event:* = null):void
+		{
+			if (_p2pConnection && _p2pConnection.connected && _Register.needConnecting)
+			{
+				_gatherRegisterTimer.delay = 5*1000;
+				_Register.Register(_groupName, _p2pConnection.nearID, _gatherName,_gatherPort);
+				//------------------------------------发送开始连接gather事件
+				var obj:Object = new Object();
+				obj.code = "P2P.gatherConnect.Start";
+				obj.gatherName = _gatherName;
+				obj.gatherPort = _gatherPort;
+				dispatchEvent(new DataManagerEvent(DataManagerEvent.STATUS,obj));
+				//--------------------------------------
+				/*var object:Object = new Object();
+				object.code = "P2P.Neighbor.Connect";
+				object.peerID = _dataManager.userName;
+				this.dispatchEvent(new DataManagerEvent(DataManagerEvent.STATUS,object));	*/
+			}
+		}		
+		
+		private function clearBadPipeList():void
+		{			
+			var nowTime:Number = Math.floor((new Date()).time);
+			
+			for(var i:String in _badPipeList)
+			{
+				if( i.search("liveTime") == -1
+					&& _badPipeList[i+"liveTime"]>=30*1000)
+				{
+					delete _badPipeList[i];
+					delete _badPipeList[i+"liveTime"];
+				}
+			}
+			
+			/*if((nowTime - _badPipeList["liveTime"]) >= 180*1000)
+			{
+			_badPipeList = new Object();
+			_badPipeList["liveTime"] = nowTime;
+			}*/			
+		}
+		
+		private function gatherQueryTimer(event:* = null):void
+		{
+			if (_p2pConnection && _p2pConnection.connected)
+			{
+				_gatherQueryTimer.delay = 6*1000;
+				
+				clearBadPipeList();
+				
+				if (_PeerQuery.needConnecting)
+				{
+					_PeerQuery.QueryPeers(_groupName, _p2pConnection.nearID, _gatherName, _gatherPort);
+				}
+				//
+				if(!_dataManager.userName["myName"])
+				{
+					_dataManager.userName["myName"] = _p2pConnection.nearID;
+				}
+				//
+				var queryNum:int = 0;//服务器返回的peer总数
+				for (var peerID:String in _PeerQuery.peersList)
+				{
+					if (_PeerQuery.peersList[peerID])
+					{
+						if( peerID != _p2pConnection.nearID)
+						{
+							queryNum++;
+							if(!_pipeList[peerID])
+							{	
+								if(!_badPipeList[peerID])
+								{
+									if (_p2pConnection && _p2pConnection.connected && _pipeNum < _MaxConnectedPeers)
+									{
+										var newPipe:P2PPipe = new P2PPipe( _p2pConnection, _dataManager, _p2pWaitTaskList, _groupName);
+										//设置gather	
+										_pipeList[peerID] = newPipe;
+										newPipe.initPipe(_p2pConnection.nearID, peerID);
+										//
+										_pipeNum++;
+										queryNum--;
+									}								
+								}								
+							}
+							else
+							{
+								queryNum--;
+							}							
+						}
+							
+						//
+						delete _PeerQuery.peersList[peerID];
+						
+					}
+				}
+				var obj:Object = new Object();
+				obj.code = "P2P.Neighbor.Connect";
+				obj.peerID = _dataManager.userName;
+				obj.lnode  = queryNum + _pipeNum;
+				//trace("lnode = "+queryNum+"  _pipeNum = "+_pipeNum+" obj.lnode = "+obj.lnode);
+				this.dispatchEvent(new DataManagerEvent(DataManagerEvent.STATUS,obj));
+			}
+			
+		}
+		private var _pipeNum:int = 0; //管道列表中，管道的数量
+		private function peerHartBeatTimer(event:* = null):void
+		{
+			_dataManager.isJoinNetGroup = false;
+			var pipeNum:int = 0;
+			var dnode:int = 0;   //已经建立好的pipe数量
+			for(var pipeID:String in _pipeList)
+			{
+				pipeNum++;
+				if( _pipeList[pipeID] && _pipeList[pipeID].pipeConnected())
+				{
+					_dataManager.isJoinNetGroup = true;
+					_pipeList[pipeID].peerHartBeatTimer();
+					//lz add 0821
+					_dataManager.userName[pipeID+"state"] = "ok";
+					dnode ++;
+					//
+				}else if (_pipeList[pipeID])
+				{
+					if (_pipeList[pipeID].isDead())
+					{						
+						_pipeList[pipeID].clear();
+						delete _pipeList[pipeID];
+						pipeNum--;
+						
+						//lz add 0821
+						
+						_badPipeList[pipeID] = pipeID;
+						_badPipeList[pipeID+"liveTime"] = Math.floor((new Date()).time);						
+						
+						//
+					}
+				}
+			}
+			
+			_pipeNum = pipeNum;
+			
+			if(_dataManager.isJoinNetGroup)
+			{				
+				var obj:Object = new Object();
+				obj.code   = "P2P.Neighbor.Connect";
+				obj.peerID = _dataManager.userName;
+				obj.dnode  = dnode;    //获得成功连接的邻居数量
+				//trace("obj.dnode = "+obj.dnode);
+				obj.peerHartBeat = true;
+				this.dispatchEvent(new DataManagerEvent(DataManagerEvent.STATUS,obj));
+			}
+			
+		}
+		//	
+		public function addWantData(chunkStart:uint,chunkEnd:uint):void
+		{
+			for( var chunkID:uint = chunkStart; chunkID <= chunkEnd; chunkID++ )
+			{
+				if(_p2pWaitTaskList[ chunkID] == null)
+				{
+					//trace("addWant = "+chunkID);
+					var task:Object = new Object();
+					task.status    = "wait";
+					task.beginTime = Math.floor((new Date()).time);
+					_p2pWaitTaskList[ chunkID] = task;
+				}
+			}
+		}
+		public function removeWantData(chunkStart:uint, chunkEnd:uint):void
+		{
+			for( var chunkID:uint =chunkStart; chunkID<=chunkEnd; chunkID++ )
+			{
+				if ( _p2pWaitTaskList && _p2pWaitTaskList[chunkID])
+				{
+					//trace("chunkID = "+chunkID)
+					delete _p2pWaitTaskList[chunkID];
+				}
+			}
+			
+		}
+		public function removeHaveData(chunkStart:uint,chunkEnd:uint):void
+		{
+			for each(var pipe:* in _pipeList)
+			{
+				if( pipe.pipeConnected() )
+				{
+					pipe.removeHave(chunkStart,chunkEnd);
+				}
+			}
+		}
+		//	
+		private function p2pStatusHandler(e:NetStatusEvent):void
+		{
+			switch (e.info.code)
+			{
+				case "NetConnection.Connect.Success" :
+					
+					var obj0:Object = new Object();
+					obj0.code = "P2P.rtmfpConnect.Success";
+					obj0.ID   = _p2pConnection.nearID;
+					obj0.rtmfpName = _rtmfpName;
+					obj0.rtmfpPort = _rtmfpPort;
+					obj0.act  = "rtmfp";
+					obj0.error = 0;					
+					dispatchEvent(new DataManagerEvent(DataManagerEvent.STATUS,obj0));
+					
+					if (_publisherTimer == null)
+					{
+						_publisherTimer = new Timer(0);
+						_publisherTimer.addEventListener(TimerEvent.TIMER, publisherTimer );
+						_publisherTimer.start();
+					}
+					//
+					for each(var pipe:* in _pipeList)
+					{
+						pipe.clear();
+					}
+					//
+					_gatherService();
+					_gatherRegisterTimer.start();
+					_gatherQueryTimer.start();					
+					//
+					delete _dataManager.userName["myName"];
+					//
+					break;
+				case "NetConnection.Connect.Closed" :
+				case "NetConnection.Connect.Failed" :
+				case "NetConnection.Connect.Rejected" :
+				case "NetConnection.Connect.AppShutdown" :
+				case "NetConnection.Connect.InvalidApp" :
+				case "NetConnection.Call.Prohibited" :
+				case "NetConnection.Call.BadVersion" : 
+				case "NetConnection.Call.Failed":
+				case "NetConnection.Call.Prohibited":
+				case "NetConnection.Connect.IdleTimeout":  
+					//case "NetConnection.Connect.NetworkChange" :
+					//
+					_publishedOK = false;
+					//
+					onError();
+					
+					_gatherRegisterTimer.stop();
+					_gatherQueryTimer.stop();
+					
+					_selector = null;
+					_selectorTimer.start();
+					
+					break;
+				case "NetStream.Connect.Success":
+					if (_pipeList[e.info.stream.farID])
+					{
+						_pipeList[e.info.stream.farID]._canRecieved = true;
+						//trace("Connect.Success   "+e.info.stream.farID);
+					}
+					
+					//
+					/*var obj1:Object = new Object();
+					obj1.code = "P2P.Neighbor.Connect";
+					obj1.peerID = _dataManager.userName;
+					this.dispatchEvent(new DataManagerEvent(DataManagerEvent.STATUS,obj1));*/
+					
+					break;
+				case "NetStream.Connect.Closed":
+					if (_pipeList[e.info.stream.farID])
+					{
+						_pipeList[e.info.stream.farID]._canSend = false;
+						_pipeList[e.info.stream.farID]._canRecieved = false;
+						_pipeList[e.info.stream.farID].clear();
+						delete _pipeList[e.info.stream.farID];
+						//
+						_badPipeList[e.info.stream.farID] = e.info.stream.farID;
+						//trace("e.info.stream.farID = "+e.info.stream.farID);
+					}
+					//
+					break;
+				case "NetStream.Publish.Start":
+				case "NetStream.Publish.Idle":
+					_publishedOK = true;
+					break;
+				case "NetStream.Publish.BadName":
+					_publishedOK = false;
+					break;
+				default : 
+					break;
+			}
+		}
+		//
+		private function rtmfpTimer(e:TimerEvent = null):void
+		{
+			if(_p2pConnection == null || _p2pConnection.connected == false)
+			{
+				//_rtmfpTimer.delay = 5*1000;
+				_publishedOK = false;
+				if(_p2pConnection)
+				{
+					_p2pConnection.removeEventListener(NetStatusEvent.NET_STATUS,p2pStatusHandler);
+					_p2pConnection.removeEventListener(IOErrorEvent.IO_ERROR,onError);
+					_p2pConnection.close();
+					_p2pConnection = null;
+				}
+				//
+				_p2pConnection = new NetConnection();
+				_p2pConnection.addEventListener(NetStatusEvent.NET_STATUS,p2pStatusHandler);
+				_p2pConnection.addEventListener(IOErrorEvent.IO_ERROR,onError);
+				_p2pConnection.maxPeerConnections = 7;
+				_p2pConnection.connect("rtmfp://"+_rtmfpName+":" + _rtmfpPort +"/");
+				//
+				var obj1:Object = new Object();
+				obj1.code = "P2P.rtmfpConnect.Start";
+				obj1.rtmfpName=_rtmfpName;//+":"+_rtmfpPort);
+				obj1.rtmfpPort=_rtmfpPort;
+				dispatchEvent(new DataManagerEvent(DataManagerEvent.STATUS,obj1));	
+				//
+			}
+			
+		}
+		private function onError(event:IOErrorEvent = null):void
+		{
+			var obj:Object = new Object();
+			obj.code = "P2P.rtmfpConnect.Failed";
+			obj.rtmfpName=String(_rtmfpName+":"+_rtmfpPort);
+			dispatchEvent(new DataManagerEvent(DataManagerEvent.STATUS,obj));					
+			//
+			if(_p2pConnection)
+			{
+				_p2pConnection.removeEventListener(NetStatusEvent.NET_STATUS,p2pStatusHandler);
+				_p2pConnection.removeEventListener(IOErrorEvent.IO_ERROR,onError);
+				_p2pConnection.close();
+				_p2pConnection = null;
+			}
+		}
+		//
+		protected var _publisherTimer:Timer;
+		protected var _sendNetStream:NetStream = null;
+		protected var _publishedOK:Boolean         = false;
+		//
+		private function publisherTimer(event:TimerEvent):void
+		{
+			_publisherTimer.delay = 6*1000;
+			//
+			if (_p2pConnection && _p2pConnection.connected)
+			{
+				if (_publishedOK == false)
+				{
+					if (_sendNetStream)
+					{
+						_sendNetStream.removeEventListener(NetStatusEvent.NET_STATUS, p2pStatusHandler);
+						_sendNetStream.close();
+						_sendNetStream = null;
+					}
+					//
+					if(_sendNetStream == null )
+					{
+						_sendNetStream = new NetStream(_p2pConnection,NetStream.DIRECT_CONNECTIONS);
+						_sendNetStream.dataReliable = true;
+						_sendNetStream.addEventListener(NetStatusEvent.NET_STATUS, p2pStatusHandler);
+						var sendStreamClient:Object = new Object();
+						sendStreamClient.onPeerConnect = function(callerns:NetStream):Boolean
+						{
+							if (_pipeNum >= _MaxConnectedPeers)
+								return true;
+							//
+							if (_pipeList[callerns.farID])
+							{
+								_pipeList[callerns.farID]._sendNetStream = callerns;
+								_pipeList[callerns.farID]._canSend = true;
+							}else
+							{
+								var newPipe:P2PPipe = new P2PPipe( _p2pConnection, _dataManager, _p2pWaitTaskList, _groupName);
+								//设置gather	
+								_pipeList[callerns.farID] = newPipe;
+								newPipe.initPipe(_p2pConnection.nearID, callerns.farID);
+								newPipe._sendNetStream = callerns;
+								newPipe._canSend = true;
+							}
+							//
+							return true;
+						}
+						//
+						_sendNetStream.client = sendStreamClient;
+					}
+					//
+					_sendNetStream.publish(_groupName/*_p2pConnection.nearID*/);
+					//
+					return;
+				}
+			}
+			//
+			//_publisherTimer.stop();
+		}
+		//
+		
+	}
+}

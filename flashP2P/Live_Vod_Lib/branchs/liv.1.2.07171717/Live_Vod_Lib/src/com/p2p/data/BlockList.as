@@ -1,0 +1,684 @@
+package com.p2p.data
+{
+	/**
+	 * 
+	 * @author Administrator
+	 * BlockList用来存放数据结构
+	 */	
+	
+	import com.p2p.data.vo.Clip;
+	import com.p2p.data.vo.LiveVodConfig;
+	import com.p2p.data.vo.Piece;
+	import com.p2p.dataManager.IDataManager;
+	import com.p2p.events.EventExtensions;
+	import com.p2p.logs.P2PDebug;
+	import com.p2p.statistics.Statistic;
+	import com.p2p.utils.TimeTranslater;
+	
+	import flash.utils.ByteArray;
+
+	/**
+	 * <ul>构造函数:_blockList _headerList</ul>
+	 * <ul>_blockList增,删,handlerTimeOutWantPiece</ul>
+	 * <ul>_headerList增,删(暂时不做) </ul>
+	 * <ul>hasMin</ul>
+	 * @author mazhoun
+	 * 特殊地方：物理分片，不是逻辑分片
+	 */
+	public class BlockList 
+	{
+		public var isDebug:Boolean=true;
+		
+		/**
+		 * dataList[hour][min][blocks,isTaskFull,headid,isDestroy]
+		 * _headerList[id]=bytearray
+		 */
+		
+		/**总列表*/
+		private var _blockList:Object = new Object;
+		/**保存头数据流的列表*/
+		private var _headerList:Object = new Object;		
+		private var SeqMap:Object = new Object;
+		/*private var _count:Number=0;
+
+		public function get count():Number
+		{
+			return _count;
+		}
+
+		public function set count(value:Number):void
+		{
+			_count = value;			
+		}
+		*/
+		private var _streamSize:Number = 0;
+		
+		public var destoryBlockArr:Array = new Array();
+		public function clearDestroy(id:Number):void
+		{
+			for(var i:int=destoryBlockArr.length;i>0;i--)
+			{
+				if(destoryBlockArr[i-1]<id)
+				{
+					this.getBlock(destoryBlockArr[i-1]).isDestory = false;
+					destoryBlockArr.splice(i-1,1);
+				}
+			}
+		}
+		public function get streamSize():Number
+		{
+			return _streamSize;
+		}
+		public function set streamSize(value:Number):void
+		{
+			_streamSize = value;
+		}
+		
+		/**构造*/
+		public var dataMgr_:IDataManager = null;
+		public function BlockList(dataMgr:IDataManager)
+		{
+			dataMgr_ = dataMgr;
+		}
+		/**
+		 * 请求desc后处理，每次添加块时，会依具Clip的时间戳timestamp按小时分钟添加到对应的列表中，
+		 * @param block 添加块
+		 * 需要返回是否成功添加
+		 * 先检查创建好，然后添加
+		 */
+		
+		public function addBlock(clip:Clip,isMinEnd:Boolean):Boolean
+		{
+			var _tempDateObj:Object = TimeTranslater.getHourMinObj(clip.timestamp);	
+			
+			if( !_blockList[_tempDateObj.minutes])
+			{
+				//在创建新的分钟之前查早之前的分钟是否空缺，有空缺时播放和下载无法做判断，所以补缺空
+				_blockList[_tempDateObj.minutes] = new Object();
+			}
+			
+			if( !_blockList[_tempDateObj.minutes]["blocks"])
+			{
+				_blockList[_tempDateObj.minutes]["blocks"] = new Object();
+			}
+			
+			_blockList[_tempDateObj.minutes]["isMinEnd"]=isMinEnd;
+			
+			if(_blockList[_tempDateObj.minutes]["blocks"][clip.timestamp])
+			{
+				/**该block已经存在，不需要添加*/
+				return false;
+			}
+			return realAddBlock(_blockList[_tempDateObj.minutes]["blocks"],clip);
+		}
+		/***设置block属性并添加到list中************/
+		private function realAddBlock(blocks:Object, clip:Clip):Boolean
+		{
+			var block:Block   = new Block(this);
+			block.id           = clip.timestamp;
+			block.head         = clip.head;
+			block.checkSum     = clip.checkSum;
+			block.duration     = clip.duration;
+			block.name         = clip.name;
+			block.size         = clip.size;
+			block.sequence     = clip.sequence;
+			/**添加block*/
+			blocks[clip.timestamp] = block;
+			SeqMap[block.sequence] = block;
+			//_count++;
+			
+			/**添加head*/
+			addHeader(clip.head);
+//			Debug.traceMsg(this,"添加block"+block.id);
+			return true;
+		}
+		
+		/**添加头,确保头的时间戳是head id*/
+		private function addHeader(hdID:Number):void
+		{
+			if(!_headerList[hdID])
+			{
+				_headerList[hdID] = new Head();
+				_headerList[hdID].id = hdID;
+				P2PDebug.traceMsg(this,"headerList["+hdID);
+			}
+		}
+		
+		public function getDescTask():Number
+		{
+			var baseTime:Number		=	LIVE_TIME.GetBaseTime();
+			var _tempDateObj:Object = 	TimeTranslater.getHourMinObj(baseTime);
+			var _baseTimeObj:Object = 	TimeTranslater.getHourMinObj(baseTime);;
+			while(true)
+			{
+				if(_blockList&&_blockList[_tempDateObj.minutes]&&_blockList[_tempDateObj.minutes]["isMinEnd"])
+				{
+					_tempDateObj.minutes+=1;
+					if(_tempDateObj.minutes-_baseTimeObj.minutes
+						>=
+						LiveVodConfig.MEMORY_TIME)
+					{
+						return -1;
+					}
+				}else
+				{
+					return _tempDateObj.minutes*60;
+				}
+			}
+			return -1;
+		}
+		
+//		private var descTask:Number = -1;
+//		public function getDescTask():Number
+//		{
+//			//_blockList[_tempDateObj.minutes]["isMinEnd"]
+//			if (descTask != -1)
+//			{
+//				var desc:Number = descTask;
+//				descTask = -1;
+//				return desc;
+//			}
+//			var block:Block;
+//			var _tempDateObj:Object = TimeTranslater.getHourMinObj(LIVE_TIME.GetBaseTime());
+//			var seq1:Number = Number.MAX_VALUE;
+//			if( _blockList[_tempDateObj.minutes] )
+//			{	
+//				for each(block in _blockList[_tempDateObj.minutes]["blocks"])
+//				{
+//					
+//					if (block.sequence < seq1)
+//					{
+//						seq1 = block.sequence;
+//						break;
+//					}
+//				}
+//				//
+//			}
+//			//
+//			if (seq1 == Number.MAX_VALUE)
+//				return LIVE_TIME.GetBaseTime();
+//			//
+//			while(1)
+//			{
+//				if (SeqMap[seq1])
+//				{
+//					if(TimeTranslater.getHourMinObj(SeqMap[seq1]).minutes-_tempDateObj.minutes
+//						>=
+//						LiveVodConfig.MEMORY_TIME)
+//					{
+//						return -1;
+//					}
+//					seq1 +=1;
+//				}else
+//				{
+//					break;
+//				}
+//			}
+//			//
+//			block = SeqMap[seq1 - 1] as Block;
+//			descTask = block.id + 60;
+//			
+//			//
+//			return block.id;// + block.duration/1000;// + 20;
+//		}
+		public function getNextSeqID(seqID:Number):Block
+		{
+			if(!SeqMap[seqID+1])
+			{
+				return null;
+			}
+			return SeqMap[seqID+1];
+		}
+		/**获得blockid，给定一个block所包含的时间段中任何时间戳将返回该block的id即该块的起始时间戳，没有对应值返回-1*/
+		public function getBlockId(id:Number):Number
+		{
+			var _tempDateObj:Object = TimeTranslater.getHourMinObj(id);
+			
+			if(!_blockList[_tempDateObj.minutes]
+				||!_blockList[_tempDateObj.minutes]["blocks"])
+			{
+				return -1;
+			}
+			var block:Block;
+			var minBlockIDInMinutes:Number = Number.MAX_VALUE;
+			var maxBlockIDInMinutes:Number = Number.MIN_VALUE;
+			for(var element:* in _blockList[_tempDateObj.minutes]["blocks"])
+			{
+				block=_blockList[_tempDateObj.minutes]["blocks"][element];
+				
+				if(((block.id<=id) && (id<block.id+block.duration/1000))
+				)
+				{
+					return block.id;
+				}
+				
+				if(minBlockIDInMinutes > block.id)
+				{
+					minBlockIDInMinutes = block.id;
+				}
+				if(maxBlockIDInMinutes < block.id)
+				{
+					maxBlockIDInMinutes = block.id;
+				}
+			}
+			//
+		
+			//_tempDateObj = TimeTranslater.getHourMinObj(id-60);
+			if( id < minBlockIDInMinutes )
+			{
+				if(!_blockList[_tempDateObj.minutes-1]
+					||!_blockList[_tempDateObj.minutes-1]["blocks"])
+				{
+					return -1;
+				}
+				
+				for(var element2:* in _blockList[_tempDateObj.minutes-1]["blocks"])
+				{
+					block=_blockList[_tempDateObj.minutes-1]["blocks"][element2];
+					
+					if(((block.id<=id) && (id<block.id+block.duration/1000)))
+					{
+						return block.id;
+					}
+				}
+			}
+				
+			if( id > minBlockIDInMinutes && id < maxBlockIDInMinutes )
+			{
+				var minAbs:Number = Number.MAX_VALUE;
+				var minAbsId:Number = -1;
+				for(var element1:* in _blockList[_tempDateObj.minutes]["blocks"])
+				{
+					block=_blockList[_tempDateObj.minutes]["blocks"][element1];
+					
+					if( Math.abs(block.id - id) < minAbs)
+					{
+						minAbs = Math.abs(block.id - id);
+						minAbsId = block.id;
+					}
+				}
+				if( minAbsId > 0)
+				{
+					return minAbsId;
+				}
+			}
+			
+			return -1;
+		}
+		/**确保getBlock的时间戳是block id，如果不能确保id,调用getBlockId*/
+		public function getBlock(id:Number):Block
+		{
+			if(id==0){return null}
+			
+			var _tempDateObj:Object = TimeTranslater.getHourMinObj(id);
+			
+			if( !_blockList[_tempDateObj.minutes] 
+				|| !_blockList[_tempDateObj.minutes]["blocks"]
+				|| !_blockList[_tempDateObj.minutes]["blocks"][id]
+			)
+			{
+				return null;
+			}
+			return _blockList[_tempDateObj.minutes]["blocks"][id];
+		}
+		public function getHeadTask():Head
+		{
+			for (var id:String in _headerList)
+			{
+				if (_headerList[id])
+				{
+					var hd:Head = _headerList[id] as Head ;
+					if (hd.getHeadStream().bytesAvailable == 0)
+						return hd;
+				}
+			}
+			//
+			return null;
+		}
+		public function getHead(id:Number):Head
+		{
+			return _headerList[id];
+		}
+		//
+						
+		/**获得id索引值之后有流的数据列表,暂时传入blockID，将来会使用blockID_pieceID */
+		public function getDataAfterPoint(id:Number):Array
+		{
+			var arr:Array = new Array();
+			var LoadTime:Number = Number(id);
+			var intervalTime:Number=3;
+			
+			var lastBlockId:Number=-1;
+			var btime:Number = LoadTime;
+			if (LoadTime == 0)
+				return arr;
+			//
+			for(LoadTime; LoadTime - btime < Math.floor(LiveVodConfig.MEMORY_TIME/2-1)*60/*60*20*/; LoadTime += intervalTime)
+			{
+				var tmpTime:Number = this.getBlockId(LoadTime);
+				if(tmpTime==-1)
+				{
+					continue;
+				}
+				if(lastBlockId!=tmpTime)
+				{
+					var lastBlock:Block =this.getBlock(tmpTime);
+					if(lastBlock&&(/*lastBlock._downLoadStat == 1 ||*/ lastBlock.isChecked))
+					{
+						arr.push(lastBlock.id);
+					}
+					//
+					lastBlockId = tmpTime;
+				}
+			}
+			//
+			return arr;
+		}
+		
+		/**
+		 * 当对方节点收到本地下载数据的进度而返回的对方拥有的数据离散表remoteHaveData:Array，
+		 * 该数组已经按照由左到右顺序排好，每一个元素代表一个离散区间DataRange对象,
+		 * getWantPiece方法遍历区间段所包含的piece，找到本地所需的wantCount数量的piece
+		 **/
+		public function getWantPiece(farID:String):Array
+		{
+			var array:Array = new Array;
+			var startID:Number = dataMgr_.getNearestWantID();
+			//var startBlock:Block = this.getBlock(startID);
+			
+			var obj:Object = TimeTranslater.getHourMinObj(startID);
+			
+			while(true)
+			{
+				var minutesObject:Object = this.getMinuteBlocks(obj.minutes++);
+				if (minutesObject == null)
+					return null;
+				//
+				var arr:Array = new Array();
+				for (var id:String in minutesObject)
+				{
+					arr.push(Number(id));					
+				}
+				//
+				arr.sort(Array.NUMERIC);
+				for each(var i:Number in arr)
+				{
+					if (i >= startID)
+					{
+						var lastBlock:Block = minutesObject[i] as Block;
+						//
+						if(    lastBlock
+							&& lastBlock.isChecked == false 
+							&& lastBlock._downLoadStat != 1 
+							&& (lastBlock.id - LIVE_TIME.GetBaseTime()) >LiveVodConfig.DAT_BUFFER_TIME/3 //假定紧急区为30秒
+							&& lastBlock.peersHaveData.indexOf(farID) != -1)
+						{
+							var index:int = 0;
+							while(1)
+							{
+								var pies:Piece = lastBlock.getPiece(index);
+								index++;
+								if (pies)
+								{
+									if (   pies.iLoadType == 2                      //如果该任务已分配给p2p下载
+										&& pies.peerID != ""                        //用该条件判断piece是否为未分配任务的初始状态
+										&& pies.peerID != farID                     //不是同一个Peer
+										&& (getTime() - pies.begin) > 30*1000)      //等待时间超过30秒
+									{
+										pies.reset();
+									}
+									//
+									if ( pies.iLoadType != 3 && pies.peerID == "")
+									{
+										pies.begin     = getTime();
+										pies.peerID    = farID;
+										pies.from      = "p2p";
+										pies.iLoadType = 2;
+										lastBlock._downLoadStat=2;
+										//pies.
+										var object:Object = new Object;
+										object.blockID = lastBlock.id;
+										object.pieceID = pies.id;
+										array.push(object);
+									}
+								}
+								else
+								{
+									break;
+								}
+							}
+							//
+							if(array.length > 0)
+							{
+								return array;
+							}
+						}	
+					}
+				}
+			}
+			
+			return array;
+		}			
+		
+		/**清理P2P任务超时或对方节点不提供数据分享而释放p2p任务*/
+		public function handlerTimeOutWantPiece(farID:String, blockID:Number, pieceID:int):void//clear:Boolean=false):void
+		{
+			return;
+			var time:Number=(new Date()).time;
+			var block:Block = this.getBlock(blockID);
+			if(block&&!block.isChecked)
+			{
+				for(var i:int=0 ; i<block.pieces.length ; i++)
+				{
+					if(block.pieces[i].stream.bytesAvailable ==0 && block.pieces[i].peerID == farID)
+					{
+						block.pieces[i].reset();
+					}
+				}
+			}
+			//
+			return;
+		}		
+		/**获得某一分钟段的blocks*/
+		public function getMinuteBlocks(minutes:Number):Object
+		{
+			//var obj:Object = TimeTranslater.getHourMinObj(id);
+			if( _blockList
+				&& _blockList[minutes]
+				&& _blockList[minutes]["blocks"]
+			)
+			{
+				return _blockList[minutes]["blocks"];
+			}
+			return null;
+		}
+		
+		/**获得最小的小时和分钟*/
+		public function getMiniHourMin():Number
+		{
+			var miniMin:Number=int.MAX_VALUE;
+			for(var min:String in _blockList)
+			{
+				if(miniMin > Number(min))
+				{
+					miniMin=Number(min);
+				}
+			}
+			if(miniMin==int.MAX_VALUE)
+			{
+				return -1;
+			}else
+			{
+				return miniMin
+			}
+		}
+		/**获得最大的小时和分钟*/
+		public function getMinMaxMinute():Object
+		{
+			var minMin:Number = Number.MAX_VALUE;
+			var maxMin:Number = -1;
+			var obj:Object = new Object();
+			
+			for(var minute:String in _blockList)
+			{
+				if(Number(minute) > maxMin)
+				{
+					maxMin = Number(minute);
+				}
+				if(Number(minute) < minMin)
+				{
+					minMin = Number(minute);
+				}
+			}
+			
+			if( minMin != Number.MAX_VALUE && maxMin != -1)
+			{
+				obj.maxMin = maxMin;
+				obj.minMin = minMin;
+				return obj;
+			}			
+			
+			return null;
+		}
+		private function getTime():Number 
+		{
+			return Math.floor((new Date()).time);
+		}
+		
+		/**按照分钟淘汰任务*/
+		private function realEliminateTask(minute:Number,delDESC:Boolean=false):void
+		{	
+			if(_blockList&&	_blockList[minute])
+			{
+				var beforeEliminateSize:Number = _streamSize;
+				
+				var blocks:Object = _blockList[minute]["blocks"];
+				var block:Block;
+				
+				for(var n:String in blocks)
+				{
+					block = blocks[n] as Block;
+					
+					if(delDESC)
+					{
+						SeqMap[block.sequence] = null;
+						delete SeqMap[block.sequence];
+		
+						block.clear();	
+						block = null;						
+						delete blocks[n];
+					}
+					else
+					{
+						block.reset();
+						block = null;	
+					}			
+				}
+				
+				if(delDESC)
+				{
+					_blockList[minute] = null;
+					delete _blockList[minute];
+				}
+			}	
+		}
+		
+		public function eliminate():void
+		{
+			/**判断是否饱和，如果饱和开始淘汰*/
+			if(_streamSize>=LiveVodConfig.MEMORY_SIZE)
+			{
+				var minMaxObj:Object;
+				minMaxObj = getMinMaxMinute();
+				
+				if(!minMaxObj || minMaxObj.maxMin == minMaxObj.minMin)return;
+				
+				var objTm:Object = TimeTranslater.getHourMinObj(LIVE_TIME.GetBaseTime());
+				
+				var beforeEliminateSize:Number = _streamSize;
+				
+				var tempCount:Number = 0;
+				
+				if(objTm.minutes - minMaxObj.minMin < 1 )
+				{	
+					/**淘汰播放点右侧一分钟的block数据流但保留desc和block*/
+					while(true)
+					{
+						if( minMaxObj.maxMin-tempCount >= objTm.minutes+LiveVodConfig.MEMORY_TIME )
+						{
+							//realEliminateTask(objTm.minutes+LiveVodConfig.MEMORY_TIME-eliminateCount);
+							realEliminateTask(minMaxObj.maxMin-tempCount);
+							if( beforeEliminateSize > _streamSize )
+							{
+								/**成功淘汰数据流*/
+								break;
+							}
+						}
+						else
+						{
+							break;
+						}
+						tempCount++;
+					}
+				}
+				else
+				{
+					/**淘汰播放点最左侧一分钟的desc和block*/
+					while(true)
+					{
+						if(objTm.minutes - (minMaxObj.minMin + tempCount) >= 1)
+						{
+							realEliminateTask(minMaxObj.minMin,true);
+							if( beforeEliminateSize > _streamSize )
+							{
+								/**成功淘汰数据流*/
+								break;
+							}
+						}
+						else
+						{
+							break;
+						}
+						tempCount++;
+					}
+				}
+			}
+		}
+		
+		public function clear():void
+		{
+			_blockList = null;
+			_headerList = null;	
+			SeqMap = null;
+			dataMgr_ = null;
+			
+			destoryBlockArr = null;
+		}
+		public function _toString():String{
+			var str:String="";
+			for(var hour:String in _blockList)
+			{
+				str+="hour:"+hour+" "+TimeTranslater.getTime(Number(hour)*3600)+" min:";
+				for(var min:String in _blockList[hour])
+				{
+					str+=min+"\n";
+//					str+=" blockid{";
+					for(var n:String in _blockList[hour][min]["blocks"])
+					{
+						var block:Block = _blockList[hour][min]["blocks"][n] as Block;
+//						if(block.isFull){
+//							str+=block.id+" nID:"+block.nextID+" pID:"+block.preID+"\n";
+//						}else{
+//							str+=block._toString()+"\n";
+							str+=block.sequence+"\n";
+//						}
+					}
+//					str+="}"
+				}
+			}
+			//str+="\ncount:"+this._count;
+			//_headerList
+			return str+"\n";
+		}
+	}
+}

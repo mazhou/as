@@ -1,0 +1,190 @@
+﻿
+package com.p2p.loaders
+{
+	/*
+	此类负责从服务器下载flv数据
+	*/
+	import com.p2p.events.HttpLoaderEvent;
+	import com.p2p.events.P2PEvent;
+	import com.p2p.utils.httpSocket.*;
+	
+	import flash.events.EventDispatcher;
+	import flash.events.ProgressEvent;
+	import flash.events.TimerEvent;
+	import flash.net.URLRequest;
+	import flash.utils.ByteArray;
+	import flash.utils.Timer;
+	
+	public class HttpLoader extends EventDispatcher
+	{
+		//文件块大小
+		protected var _clipInterval:uint;//每一块数据的大小,字节数
+		protected var _chunks:uint;
+		protected var _mediaStream:HttpSocket;
+		protected var _httpNowIndex:int=-1;//当前下载任务的索引值（第一块chunk的索引值）
+		
+		protected var _url:String;
+		protected var _totalBytesSize:uint;
+		protected var _nChunk_number:int;//本次下载任务共需下载多少块数据
+		protected var _nCount:int;//收到第几块数据
+		
+		protected var _fetchDataTimer:Timer;
+			
+		public function gethttpNowIndex():int
+		{
+			return _httpNowIndex;
+		}
+		public function GethttpChunks():int
+		{
+			return _nChunk_number;
+		}
+		public function HttpLoader(clipInterval:uint)
+		{
+			_clipInterval=clipInterval;
+			_fetchDataTimer = new Timer(100);
+			_fetchDataTimer.addEventListener(TimerEvent.TIMER, heartBeatFetchData);
+			_fetchDataTimer.start();
+			
+		}
+		
+		public function setReady(url:String,totalBytesSize:uint,chunks:uint):void
+		{
+			_url=url;
+			_totalBytesSize=totalBytesSize;
+			_chunks=chunks;
+		}
+		public function loadData(idx:uint, n:int):Boolean
+		{
+			errorLevel = "HttpLoader-error";
+			_mediaStream=new HttpSocket(_clipInterval);
+			_mediaStream.addEventListener(HttpSocketEvent.PROGRESS,mediaStream_PROGRESS);
+			_mediaStream.addEventListener(HttpSocketEvent.ERROR,mediaStream_ERROR);		
+			_nChunk_number = n;
+			
+			if(DetermineRanges(idx))
+			{		
+				_nCount = 0;
+				return _mediaStream.load(new URLRequest(_url));
+			}	
+			//
+			return false;
+			
+		}
+		private var errorLevel:String = "HttpLoader-error";//
+		public function clear():void
+		{	
+			errorLevel = "HttpLoader-warnning";
+			if(_mediaStream)
+			{
+				_mediaStream.removeEventListener(HttpSocketEvent.PROGRESS,mediaStream_PROGRESS);
+				_mediaStream.removeEventListener(HttpSocketEvent.ERROR,mediaStream_ERROR);
+				_mediaStream.close();
+				_mediaStream=null;
+			}
+			//
+			if(_fetchDataTimer)
+			{
+				_fetchDataTimer.removeEventListener(TimerEvent.TIMER, heartBeatFetchData);
+				_fetchDataTimer.stop();
+			}
+			//
+			_clipInterval=0;
+			_url="";
+		}
+		//		
+		private function heartBeatFetchData(e:* = null):void
+		{
+			var lastChunkSize:uint = _totalBytesSize % _clipInterval;
+			if (lastChunkSize == 0)
+			{
+				lastChunkSize = _clipInterval;
+			}
+			//
+			if (_mediaStream.isEnough((_httpNowIndex + _nCount) >= (_chunks-1) ? lastChunkSize : _clipInterval))
+			{
+				mediaStream_PROGRESS();
+			}
+		}	
+		protected function mediaStream_PROGRESS(e:HttpSocketEvent=null):void
+		{
+			
+			if(_mediaStream.bytesLoaded > 0)
+			{
+				var byteArray:ByteArray = new ByteArray(); 
+				var obj:Object = new Object();
+				obj.id = _httpNowIndex + _nCount;
+				obj.from = "http";
+				
+				if (_mediaStream.readBytes(byteArray, 0, obj.id != _chunks-1 ? false : true))
+				{
+					obj.data = byteArray;					
+					var e1:HttpLoaderEvent=new HttpLoaderEvent(HttpLoaderEvent.HTTP_GOT_PROGRESS,obj);				
+					dispatchEvent(e1);
+					_nCount++;	
+				}
+				//
+				if(_nChunk_number == _nCount)
+				{
+					var object:Object = new Object();
+					object.id = uint(_httpNowIndex);
+					var event1:HttpLoaderEvent=new HttpLoaderEvent(HttpLoaderEvent.HTTP_GOT_COMPLETE, object);				
+					dispatchEvent(event1);
+				}
+				//
+				return;
+			}
+			//
+			http_error(errorLevel,"ioError");
+		}
+		
+		protected function http_error(status:String,text:String):void
+		{			
+			
+			var obj:Object = new Object();
+			obj.type = status;
+			obj.id   = uint(_httpNowIndex);
+			obj.text  = text;
+			obj.nCount = _nChunk_number;
+			var e:P2PEvent = new P2PEvent(P2PEvent.ERROR, obj);
+			dispatchEvent(e);			
+			//
+			//trace("status  "+status+"  obj.nCount"+obj.nCount)
+			if(_mediaStream)
+			  _mediaStream.close();
+		}
+		
+		protected function mediaStream_ERROR(e:HttpSocketEvent):void
+		{
+			var text:String=String(e.msg);
+			if(text != "ioError" && text != "securityError")
+			{
+				errorLevel = "HttpLoader-warnning";
+				text = "ioError";
+			}
+			
+			http_error(errorLevel,String(text));
+			
+		}
+		/*
+		根据下载任务进行下载范围字节数的确定
+		*/
+		protected function DetermineRanges(idx:uint):Boolean
+		{		
+			_httpNowIndex =idx;		
+			var begin:uint = idx*_clipInterval;
+			var end:uint = (idx + _nChunk_number) * _clipInterval -1;
+			if(end > _totalBytesSize - 1)
+			{
+				end = _totalBytesSize - 1;
+			}
+			if(begin > _totalBytesSize - 1)
+			{
+				begin = _totalBytesSize - 1;
+			}
+			//
+			//trace("range","bytes id"+idx+"=" + begin.toString() + "-" + end.toString()+"  size = "+String(end-begin));
+			_mediaStream.addHeadItem("range","bytes=" + begin.toString() + "-" + end.toString());	
+			return true;
+		}
+	}
+}

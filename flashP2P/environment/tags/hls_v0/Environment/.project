@@ -1,0 +1,49 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<projectDescription>
+	<name>Environment</name>
+	<comment></comment>
+	<projects>
+	</projects>
+	<buildSpec>
+		<buildCommand>
+			<name>com.adobe.flexbuilder.project.flexbuilder</name>
+			<arguments>
+			</arguments>
+		</buildCommand>
+	</buildSpec>
+	<natures>
+		<nature>com.adobe.flexbuilder.project.actionscriptnature</nature>
+	</natures>
+	<linkedResources>
+		<link>
+			<name>[source path] HlsVideo_Lib-src</name>
+			<type>2</type>
+			<locationURI>DOCUMENTS/HlsVideo_Lib/src</locationURI>
+		</link>
+		<link>
+			<name>[source path] Live_Vod_Lib-src</name>
+			<type>2</type>
+			<locationURI>DOCUMENTS/Live_Vod_Lib/src</locationURI>
+		</link>
+		<link>
+			<name>[source path] M3u8_Lib-src</name>
+			<type>2</type>
+			<locationURI>DOCUMENTS/M3u8_Lib/src</locationURI>
+		</link>
+		<link>
+			<name>[source path] Public_Lib-src</name>
+			<type>2</type>
+			<locationURI>DOCUMENTS/Public_Lib/src</locationURI>
+		</link>
+		<link>
+			<name>[source path] Vod_Lib-src</name>
+			<type>2</type>
+			<locationURI>DOCUMENTS/Vod_Lib/src</locationURI>
+		</link>
+		<link>
+			<name>bin-debug</name>
+			<type>2</type>
+			<location>D:/negixWorkSpace/www/p2p</location>
+		</link>
+	</linkedResources>
+</projectDescription>

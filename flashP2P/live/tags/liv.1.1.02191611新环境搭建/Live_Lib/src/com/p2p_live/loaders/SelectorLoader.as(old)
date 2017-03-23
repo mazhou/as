@@ -1,0 +1,219 @@
+package com.p2p_live.loaders
+{
+	import com.p2p_live.events.SelectorEvent;
+	import com.p2p_live.loaders.gather_common.*;
+	import com.p2p_live.loaders.gather_common.server_addr.*;
+	import com.p2p_live.loaders.gather_proto.*;
+	import com.p2p_live.loaders.selector_proto.peer_request;
+	import com.p2p_live.loaders.selector_proto.peer_response;
+	import com.p2p_live.loaders.selector_proto.selector_header;
+	import com.p2p_live.loaders.selector_proto.selector_header.pkt_type;
+	
+	import flash.errors.IOError;
+	import flash.events.Event;
+	import flash.events.EventDispatcher;
+	import flash.events.IEventDispatcher;
+	import flash.events.IOErrorEvent;
+	import flash.events.ProgressEvent;
+	import flash.events.SecurityErrorEvent;
+	import flash.net.Socket;
+	import flash.utils.ByteArray;
+	
+	public class SelectorLoader extends EventDispatcher
+	{
+		//private var _sockSelector:Socket;
+		private var _groupName:String  = "";
+		private var _selectorIP:String;
+		private var _selectorPort:uint = 80;
+		private var _addrLength:int    = 0;
+		
+		private var _startTime:Number;
+		
+		public function SelectorLoader(target:IEventDispatcher=null)
+		{
+			super(target);
+		}
+		//
+		public function init(groupName:String, selectorIP:String, selectorPort:uint=80):void
+		{
+			_groupName    = groupName;
+			_selectorIP   = selectorIP;
+			_selectorPort = selectorPort;
+			initSocket(_selectorIP,_selectorPort);
+			//
+			_startTime = Math.floor((new Date()).time);
+			//
+		}
+		
+		private function initSocket(selectorIP:String,selectorPort:uint):void
+		{
+			try
+			{
+				isOK = false;
+				redirectSelector = false;
+				isConnecting = true;
+				recData.clear();
+				var _sockSelector:Socket = new Socket();
+				_sockSelector.timeout = 8*1000;
+				_sockSelector.addEventListener(Event.CONNECT,onSelectorSockConnect);
+				_sockSelector.addEventListener(SecurityErrorEvent.SECURITY_ERROR,onSecurityError);
+				_sockSelector.addEventListener(IOErrorEvent.IO_ERROR,onIOError);
+				_sockSelector.addEventListener(ProgressEvent.SOCKET_DATA,onSelectorSockData);
+				_sockSelector.addEventListener(Event.CLOSE,onSelectorClose);
+				_sockSelector.connect(selectorIP,selectorPort );
+			}
+			catch (error:Error)
+			{
+				isConnecting = false;
+			}
+		}
+		//
+		private function onSelectorSockConnect(event:Event):void
+		{
+			try
+			{
+				var _sockSelector:Socket = event.target as Socket;
+				//
+				var selHeader:selector_header = new selector_header();
+				var selRequest:peer_request = new peer_request();
+				var byteHeader:ByteArray = new ByteArray();
+				var byteRequest:ByteArray = new ByteArray();
+				
+				selHeader.pktType = pkt_type.PEER_REQUEST;
+				selRequest.groupId =_groupName;
+				selHeader.pktLen = selRequest.groupId.length +2;
+				
+				selHeader.writeTo(byteHeader);
+				selRequest.writeTo(byteRequest);
+				
+				_sockSelector.writeBytes(byteHeader);
+				_sockSelector.writeBytes(byteRequest);
+				_sockSelector.flush();
+			}
+			catch (error:Error)
+			{
+				isConnecting = false;
+			}
+		}
+		private var recData:ByteArray = new ByteArray();
+		private function onSelectorSockData(event:Event):void
+		{
+			var _sockSelector:Socket = event.target as Socket;
+			recData.position = recData.length;
+			_sockSelector.readBytes(recData);
+			recData.position = 0;
+			
+			//0808 add			
+			_onSelectorSockData();
+			recData.clear();
+			
+			_sockSelector.close();
+			
+			isConnecting = false;/**/
+			
+		}
+		
+		public var gatherIp:String;
+		public var gatherPort:uint;
+		public var rtmfpPort:uint;
+		public var rtmfpIp:String;
+		public var selectorIP:String;
+		public var selectorPort:uint;
+		public var isConnecting:Boolean;
+		public var isOK:Boolean;
+		public var redirectSelector:Boolean;
+		public var error:Boolean;
+		
+		private function _onSelectorSockData(event:ProgressEvent=null):void
+		{
+			var selHeader:selector_header = new selector_header();
+			var selRespone:peer_response = new peer_response();
+			var byteSel:ByteArray = new ByteArray();
+			var byteHeader:ByteArray=new ByteArray();
+			var byteRespone:ByteArray=new ByteArray();
+			
+			if (recData.bytesAvailable >= 10)
+				recData.readBytes(byteHeader,0,10);	
+			//else return reConnectSelector();
+			//
+			byteHeader.position=0;
+			selHeader.mergeFrom(byteHeader);
+			//
+			if (selHeader.pktLen - 10 <= recData.bytesAvailable)
+				recData.readBytes(byteRespone, 0, recData.bytesAvailable);
+			//else return reConnectSelector();
+			//
+			byteRespone.position = 0;
+			selRespone.mergeFrom(byteRespone);
+			
+			_addrLength    = selRespone.serverAddr.length;
+			switch(_addrLength)
+			{
+				case 1:
+					if (selRespone.serverAddr[0].addrType == com.p2p_live.loaders.gather_common.server_addr.addr_type.GATHER_SELECTOR_ADDR)
+					{
+						_selectorIP   = selRespone.serverAddr[0].ipStr;
+						_selectorPort = selRespone.serverAddr[0].port;
+						//
+						selectorIP   = _selectorIP;
+						selectorPort = _selectorPort;
+					}
+					//
+					isOK = false;
+					redirectSelector = true;
+					return;
+					
+					break;
+				case 2:
+					for(var i:int=0;i<_addrLength;i++)
+					{
+						if(selRespone.serverAddr[i].addrType==com.p2p_live.loaders.gather_common.server_addr.addr_type.GATHER_SERVER_ADDR)
+						{
+							gatherIp = selRespone.serverAddr[i].ipStr;
+							gatherPort = selRespone.serverAddr[i].port;
+							
+						}else if(selRespone.serverAddr[i].addrType==com.p2p_live.loaders.gather_common.server_addr.addr_type.GATHER_RTMFP_ADDR)
+						{							
+							rtmfpIp   = selRespone.serverAddr[i].ipStr;
+							rtmfpPort = selRespone.serverAddr[i].port;
+						}
+					}
+					//
+					//utime = Math.floor((new Date()).time) - _startTime;
+					isOK = true;
+					break;
+			}
+		}
+		private function onSelectorClose(e:Event):void
+		{
+			var _sockSelector:Socket = e.target as Socket;
+			//_onSelectorSockData();
+			//recData.clear();			
+			_sockSelector.close();			
+			isConnecting = false;
+		}
+		private function onIOError(e:IOErrorEvent):void
+		{
+			var _sockSelector:Socket = e.target as Socket;			
+			redirectSelector = false;
+			isOK = false;
+			isConnecting = false;
+			error = true;
+		}
+		private function onSecurityError(e:SecurityErrorEvent):void
+		{
+			var _sockSelector:Socket = e.target as Socket;
+			
+			redirectSelector = false;
+			isOK = false;
+			isConnecting = false;
+			error = true;
+		}
+		
+		private function reConnectSelector():void
+		{
+			initSocket(_selectorIP,_selectorPort);
+		}
+		
+	}
+}

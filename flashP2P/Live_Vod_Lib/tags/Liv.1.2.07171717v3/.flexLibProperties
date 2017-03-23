@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="UTF-8" standalone="no"?>
+<flexLibProperties includeAllClasses="true" version="3">
+  <includeClasses>
+    <classEntry path="com.p2p.data.Block"/>
+    <classEntry path="com.p2p.data.BlockList"/>
+    <classEntry path="com.p2p.data.RangeList"/>
+    <classEntry path="com.p2p.data.vo.Clip"/>
+    <classEntry path="com.p2p.data.vo.DataRange"/>
+    <classEntry path="com.p2p.data.vo.InitData"/>
+    <classEntry path="com.p2p.data.vo.Piece"/>
+    <classEntry path="com.p2p.dataManager.DisPatcherFactory"/>
+    <classEntry path="com.p2p.events.protocol.NETSTREAM_PROTOCOL"/>
+    <classEntry path="com.p2p.loaders.ChecksumLoadFactory"/>
+    <classEntry path="com.p2p.loaders.DescLoader"/>
+    <classEntry path="com.p2p.loaders.HttpLoad"/>
+    <classEntry path="com.p2p.loaders.IChecksumLoad"/>
+    <classEntry path="com.p2p.logs.Debug"/>
+    <classEntry path="com.p2p.statistics.Statistic"/>
+    <classEntry path="com.p2p.stream.P2PNetStream"/>
+    <classEntry path="com.p2p.loaders.HeadLoader"/>
+    <classEntry path="com.p2p.data.vo.LOAD_TYPE"/>
+  </includeClasses>
+  <includeResources/>
+  <namespaceManifests/>
+</flexLibProperties>
