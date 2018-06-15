@@ -1,3 +1,33 @@
 #as
 
+
+
+mac下载
+https://supportdownloads.adobe.com/thankyou.jsp?ftpID=5516&fileID=5535
+win下载
+https://supportdownloads.adobe.com/thankyou.jsp?ftpID=5517&fileID=5536
+
+1.到Adobe官网下载FlashBuilder 4.6，有简体中文版；
+语言：Chinese (Simplified)
+http://trials3.adobe.com/AdobeProducts/FLBR/4_6/win32/FlashBuilder_4_6_LS10.exe
+
+2.安装时，不用序列号，直接选择安装试用版；
+
+3.安装完成后在安装目录下依次修改下列3个文件：
+(1).eclipse\plugins\com.adobe.flexbuilder.project_4.6.0.328916\META-INF下面的MANIFEST.MF修改：
+Bundle-Version: 0.0.0
+
+(2).eclipse\features\com.adobe.flexide.feature_4.6.0.328916下面的feature.xml修改：
+<plugin
+         id="com.adobe.flexbuilder.project"
+         download-size="0"
+         install-size="0"
+         version="0.0.0"/>
+(3).eclipse\plugins\com.adobe.flexbuilder.flex_4.6.0.328916下面：
+复制config.xml并重命名为config_builder.xml
+
+注：以上紫色文字部分为具体的版本号，请跟据实际版本号进行查找
+修改完成之后，再启动Adobe Flash Builder 4.6，恭喜你，你会发现自己彻底拥有了这款RIA工具了。
+
+实时流
 https://tools.ietf.org/html/rfc7016
